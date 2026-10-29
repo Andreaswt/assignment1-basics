@@ -60,27 +60,55 @@ def train_bpe(input_path: str, vocab_size: int, special_tokens: list[str]) -> tu
         vocab[len(vocab)] = special_tokens[i].encode("utf-8")
 
     # merge
-    while len(vocab) < vocab_size:
-        pairs = defaultdict(int)
-        for token in pre_tokens:
-            for i in range(len(token) - 1):
-                pairs[(token[i], token[i + 1])] += pre_tokens[token]
+    pairs = defaultdict(int)
 
+    # initial frequency counting
+    for token in pre_tokens:
+        for i in range(len(token) - 1):
+            pairs[(token[i], token[i + 1])] += pre_tokens[token]
+
+    while len(vocab) < vocab_size:
         # sort by frequency, then lexi
         if not pairs:
             break
+
         top = max(pairs, key=lambda x: (pairs[x], x))
         new_pretokens = {}
-        for token in pre_tokens:
+        for token in pre_tokens:  # pre_tokens: (b' c', b'at'): 85
+            freq = pre_tokens[token]
+
+            # skip pairs without the top freq
+            top_is_in_token = False
+            for i in range(len(token) - 1):
+                if token[i] == top[0] and token[i + 1] == top[1]:
+                    top_is_in_token = True
+                    break
+
+            if not top_is_in_token:
+                new_pretokens[token] = freq
+                continue
+
+            for i in range(len(token) - 1):
+                pairs[(token[i], token[i + 1])] -= freq
+
             new, i = [], 0
             while i < len(token):
                 if i + 1 < len(token) and top[0] == token[i] and top[1] == token[i+1]:
+                    # if pair forms top, then merge and add
                     new.append(top[0] + top[1])
                     i += 2
                 else:
+                    # else each token is added separately
                     new.append(token[i])
                     i += 1
-            new_pretokens[tuple(new)] = pre_tokens[token]
+            new_token = tuple(new)
+            new_pretokens[new_token] = pre_tokens[token]
+            for i in range(len(new_token) - 1):
+                pairs[(new_token[i], new_token[i + 1])] += freq
+
+        for pair in list(pairs):
+            if pairs[pair] <= 0:
+                del pairs[pair]
 
         merges.append(top)
         vocab[len(vocab)] = top[0] + top[1]
