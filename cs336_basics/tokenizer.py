@@ -1,5 +1,5 @@
-from collections import defaultdict
 from collections.abc import Iterable, Iterator
+import pickle
 import regex as re
 
 
@@ -14,7 +14,10 @@ class Tokenizer:
         self.inverse_vocab = {
             token: token_id for token_id, token in vocab.items()}
         self.merges = merges
-        self.special_tokens = special_tokens
+        # if special_tokens contains overlaps, e.g. both <|endoftext|><|endoftext|> and <|endoftext|>
+        # it should match the longest first. sorting fixes this
+        self.special_tokens = sorted(
+            special_tokens, key=len, reverse=True) if special_tokens else None
 
     @classmethod
     def from_files(
@@ -23,18 +26,31 @@ class Tokenizer:
         merges_filepath: str,
         special_tokens: list[str] | None = None,
     ) -> "Tokenizer":
-        pass
+        with open(vocab_filepath, "rb") as f:
+            vocab = pickle.load(f)
+        with open(merges_filepath, "rb") as f:
+            merges = pickle.load(f)
+
+        return cls(vocab, merges, special_tokens)
 
     def encode(self, text: str) -> list[int]:
+        """
+        1. pretokenize: split text into tokens of bytes.
+        2. run merge ops in the same order as during training
+        3. lookup each merged token in the trained vocab, to find the its int ID
+        """
         # pre-tokenize
         PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
         pre_tokens = list()
 
-        chunks = re.split("(" + "|".join([re.escape(t)
-                                          for t in self.special_tokens]) + ")", text)
+        if self.special_tokens:
+            chunks = re.split("(" + "|".join([re.escape(t)
+                                              for t in self.special_tokens]) + ")", text)
+        else:
+            chunks = [text]
 
         for chunk in chunks:
-            if chunk in self.special_tokens:
+            if self.special_tokens and chunk in self.special_tokens:
                 pre_tokens.append((chunk.encode("utf-8"),))
                 continue
 
@@ -73,7 +89,13 @@ class Tokenizer:
         return int_seq
 
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
-        pass
+        for text in iterable:
+            yield from self.encode(text)
 
     def decode(self, ids: list[int]) -> str:
-        pass
+        """
+        joins together all bytes before decoding.
+        utf-8 char can consist of up to 4 bytes, so decoding bytes one at a time can corrupt the decoding.
+        """
+        token_bytes = [self.vocab[id] for id in ids]
+        return b"".join(token_bytes).decode(errors="replace")
